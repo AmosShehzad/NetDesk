@@ -1,23 +1,28 @@
-import httpx
-import environ
+import logging
 
-env = environ.Env()
-environ.Env.read_env()
+import httpx
+from django.conf import settings
 from django.db.models import Count, Avg, F, ExpressionWrapper, DurationField
-from rest_framework.views import APIView, Response
-from users.permissions import IsManagerOrAdmin
+from django.http import FileResponse, Http404
+from django.utils import timezone
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
-from django.http import FileResponse, Http404
-from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from users.permissions import IsManagerOrAdmin, IsStaffRole
 from .models import Ticket, TicketCategory, TicketComment, InternalNote, Attachment
 from .serializers import (
     TicketSerializer, TicketCategorySerializer,
     TicketCommentSerializer, InternalNoteSerializer, AttachmentSerializer,
 )
-from django.utils import timezone
-from users.permissions import IsStaffRole
+
+logger = logging.getLogger(__name__)
+
+AI_SERVICE_URL = settings.AI_SERVICE_URL
+MAX_AI_REPLIES = 3
+
 TROUBLESHOOTING_TIPS = {
     'NetworkOutage': "Please try restarting your router (unplug for 30 seconds, then plug back in) and check if neighbors are also affected.",
     'SlowSpeed': "Try disconnecting other devices and running a speed test after restarting your router.",
@@ -26,13 +31,9 @@ TROUBLESHOOTING_TIPS = {
     'Other': "Thank you for reaching out — our support team will review your request shortly.",
 }
 
-MAX_AI_REPLIES = 3
 
 def get_ai_assistant_user():
-    """
-    A system account that 'writes' the AI's automatic replies as normal ticket comments.
-    Created once, reused after that — get_or_create is idempotent.
-    """
+    """System account for AI replies. Created once, reused after."""
     from users.models import User
     user, created = User.objects.get_or_create(
         phone_number='00000000000',
@@ -42,10 +43,10 @@ def get_ai_assistant_user():
         user.set_unusable_password()
         user.save()
     return user
+
+
 def notify_staff_of_escalation(ticket):
-    """
-    Notifies every Manager/Admin that a customer needs human help on this ticket.
-    """
+    """Notifies every Manager/Admin that a ticket needs human help."""
     from users.models import User
     from notifications.models import Notification
 
@@ -57,7 +58,7 @@ def notify_staff_of_escalation(ticket):
         )
         for s in staff
     ])
-AI_SERVICE_URL = env('AI_SERVICE_URL', default='http://127.0.0.1:8001')
+    logger.info(f"Ticket {ticket.ticket_number} escalated to {staff.count()} staff members")
 
 class TicketCategoryViewSet(viewsets.ModelViewSet):
     """Simple CRUD for categories — only staff should manage these in practice,
@@ -108,7 +109,8 @@ class TicketViewSet(viewsets.ModelViewSet):
             )
             if response.status_code == 200:
                 ai_data = response.json()
-        except Exception:
+        except Exception as e:
+            logger.error(f"AI service unreachable on ticket creation: {e}")
             ai_data = None
 
         ai_user = get_ai_assistant_user()
@@ -203,8 +205,8 @@ class TicketCommentViewSet(viewsets.ModelViewSet):
                 ticket.save()
             else:
                 raise Exception("AI service returned non-200")
-        except Exception:
-            # AI unreachable mid-conversation — escalate immediately rather than go silent
+        except Exception as e:
+            logger.error(f"AI service failed mid-conversation on {ticket.ticket_number}: {e}")
             ticket.escalated = True
             ticket.save()
             TicketComment.objects.create(
@@ -271,6 +273,8 @@ class AttachmentViewSet(viewsets.ModelViewSet):
             )
         except FileNotFoundError:
             raise Http404("File not found.")
+
+
 class DashboardView(APIView):
     """
     Manager/Admin only. Returns aggregated ticket stats in one call.
@@ -341,4 +345,3 @@ class DashboardView(APIView):
             'open_tickets': status_counts.get('OPEN', 0),
             'daily_report': daily_report,
         })
-    
