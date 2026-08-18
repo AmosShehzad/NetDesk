@@ -60,6 +60,7 @@ def notify_staff_of_escalation(ticket):
     ])
     logger.info(f"Ticket {ticket.ticket_number} escalated to {staff.count()} staff members")
 
+
 class TicketCategoryViewSet(viewsets.ModelViewSet):
     """Simple CRUD for categories — only staff should manage these in practice,
     but we're keeping permissions simple for MVP (any authenticated user can read;
@@ -104,7 +105,7 @@ class TicketViewSet(viewsets.ModelViewSet):
         try:
             response = httpx.post(
                 f"{AI_SERVICE_URL}/ai/analyze",
-                json={"text": ticket.description},
+                json={"text": ticket.description, "customer_id": str(ticket.customer.id)},
                 timeout=30.0
             )
             if response.status_code == 200:
@@ -120,23 +121,37 @@ class TicketViewSet(viewsets.ModelViewSet):
             ticket.ai_reply_count = 1
             ticket.save()
 
-            category = ai_data.get('category', 'Other')
-            tip = TROUBLESHOOTING_TIPS.get(category, TROUBLESHOOTING_TIPS['Other'])
-            reply_text = f"{ai_data.get('suggested_reply', '')}\n\nQuick tip: {tip}"
-
-            TicketComment.objects.create(ticket=ticket, author=ai_user, message=reply_text)
-
-            if ai_data['priority'] in ['HIGH', 'CRITICAL']:
+            # If the AI decided to escalate, respect that decision
+            if ai_data.get('should_escalate', False):
+                ticket.escalated = True
+                ticket.save()
                 TicketComment.objects.create(
                     ticket=ticket, author=ai_user,
-                    message="This issue has been flagged as urgent and escalated to our support team. They will contact you shortly."
+                    message=ai_data.get('suggested_reply', 'Our support team will assist you shortly.')
                 )
+                notify_staff_of_escalation(ticket)
+                logger.info(f"Ticket {ticket.ticket_number} auto-escalated by AI (reason: {ai_data.get('escalation_reason', 'N/A')})")
+            else:
+                # AI is confident — post its reply
+                category = ai_data.get('category', 'Other')
+                tip = TROUBLESHOOTING_TIPS.get(category, TROUBLESHOOTING_TIPS['Other'])
+                reply_text = f"{ai_data.get('suggested_reply', '')}\n\nQuick tip: {tip}"
+                TicketComment.objects.create(ticket=ticket, author=ai_user, message=reply_text)
+
+                # Still flag urgent tickets for staff awareness
+                if ai_data['priority'] in ['HIGH', 'CRITICAL']:
+                    TicketComment.objects.create(
+                        ticket=ticket, author=ai_user,
+                        message="This issue has been flagged as urgent. Our support team has been notified."
+                    )
+                    notify_staff_of_escalation(ticket)
         else:
-            # AI unreachable — safe fallback, never leave the customer without any response
+            # AI unreachable — safe fallback
             TicketComment.objects.create(
                 ticket=ticket, author=ai_user,
                 message="Thank you for reporting this. Our support team will review your ticket and get back to you shortly."
             )
+
 
 class TicketCommentViewSet(viewsets.ModelViewSet):
     """
@@ -163,57 +178,41 @@ class TicketCommentViewSet(viewsets.ModelViewSet):
         comment = serializer.save(author=self.request.user)
         ticket = comment.ticket
 
-        # Only the AI responds automatically to CUSTOMER messages,
-        # and only while the ticket is still open and not already escalated.
-        is_customer_message = (self.request.user == ticket.customer)
-        ticket_still_active = ticket.status not in ['RESOLVED', 'CLOSED']
+        # Only run AI flow if author is the customer, ticket isn't escalated, and limit isn't reached
+        if self.request.user.role == 'CUSTOMER' and not ticket.escalated and ticket.ai_reply_count < MAX_AI_REPLIES:
+            comments = ticket.comments.select_related('author').order_by('created_at')
+            history = "\n".join([f"{c.author.username}: {c.message}" for c in comments])
 
-        if not (is_customer_message and ticket_still_active and not ticket.escalated):
-            return
+            try:
+                response = httpx.post(
+                    f"{AI_SERVICE_URL}/ai/analyze",
+                    json={
+                        "text": f"Ticket conversation so far:\n{history}\n\nRespond helpfully to the customer's latest message.",
+                        "customer_id": str(ticket.customer.id),
+                    },
+                    timeout=30.0
+                )
+                if response.status_code == 200:
+                    ai_data = response.json()
+                    ai_user = get_ai_assistant_user()
 
-        ai_user = get_ai_assistant_user()
-
-        if ticket.ai_reply_count >= MAX_AI_REPLIES:
-            # AI has tried enough times — hand off to a human
-            ticket.escalated = True
-            ticket.save()
-
-            TicketComment.objects.create(
-                ticket=ticket, author=ai_user,
-                message="I've connected you with our support team — they'll follow up with you shortly."
-            )
-            notify_staff_of_escalation(ticket)
-            return
-
-        # Build a short conversation history so the AI has context, not just the last line
-        history = "\n".join(
-            f"{c.author.username or 'Customer'}: {c.message}"
-            for c in ticket.comments.order_by('created_at')
-        )
-
-        try:
-            response = httpx.post(
-                f"{AI_SERVICE_URL}/ai/analyze",
-                json={"text": f"Ticket conversation so far:\n{history}\n\nRespond helpfully to the customer's latest message."},
-                timeout=30.0
-            )
-            if response.status_code == 200:
-                data = response.json()
-                reply = data.get('suggested_reply', "Let me look into that for you.")
-                TicketComment.objects.create(ticket=ticket, author=ai_user, message=reply)
-                ticket.ai_reply_count += 1
-                ticket.save()
-            else:
-                raise Exception("AI service returned non-200")
-        except Exception as e:
-            logger.error(f"AI service failed mid-conversation on {ticket.ticket_number}: {e}")
-            ticket.escalated = True
-            ticket.save()
-            TicketComment.objects.create(
-                ticket=ticket, author=ai_user,
-                message="I'm having trouble processing that right now — I've flagged this for our team to follow up."
-            )
-            notify_staff_of_escalation(ticket)
+                    if ai_data.get('should_escalate', False):
+                        ticket.escalated = True
+                        ticket.save()
+                        TicketComment.objects.create(
+                            ticket=ticket, author=ai_user,
+                            message=ai_data.get('suggested_reply', 'Our support team will assist you shortly.')
+                        )
+                        notify_staff_of_escalation(ticket)
+                    else:
+                        TicketComment.objects.create(
+                            ticket=ticket, author=ai_user,
+                            message=ai_data.get('suggested_reply', '')
+                        )
+                        ticket.ai_reply_count += 1
+                        ticket.save()
+            except Exception as e:
+                logger.error(f"AI service error during comment follow-up: {e}")
 
 
 class InternalNoteViewSet(viewsets.ModelViewSet):
