@@ -1,5 +1,9 @@
 from rest_framework import serializers
-from .models import Ticket, TicketCategory, TicketComment, InternalNote, Attachment
+from django.utils import timezone
+from .models import (
+    Ticket, TicketCategory, TicketComment, InternalNote,
+    Attachment, TicketRating, TicketActivity, Outage,
+)
 
 
 class TicketCommentSerializer(serializers.ModelSerializer):
@@ -30,7 +34,6 @@ class AttachmentSerializer(serializers.ModelSerializer):
         read_only_fields = ['uploaded_by']
 
     def get_download_url(self, obj):
-        # Points to the SECURED endpoint, not a raw media path
         return f"/api/attachments/{obj.id}/download/"
 
     def validate_file(self, value):
@@ -52,17 +55,43 @@ class TicketCategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description']
 
 
+class TicketRatingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TicketRating
+        fields = ['id', 'ticket', 'score', 'feedback', 'created_at']
+        read_only_fields = ['created_at']
+
+
+class TicketActivitySerializer(serializers.ModelSerializer):
+    actor_username = serializers.CharField(source='actor.username', read_only=True)
+
+    class Meta:
+        model = TicketActivity
+        fields = ['id', 'ticket', 'actor', 'actor_username', 'action', 'details', 'created_at']
+        read_only_fields = ['created_at']
+
+
+class OutageSerializer(serializers.ModelSerializer):
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = Outage
+        fields = ['id', 'area', 'description', 'status', 'started_at', 'resolved_at',
+                  'created_by', 'created_by_username']
+        read_only_fields = ['created_by', 'resolved_at']
+
+
 class TicketSerializer(serializers.ModelSerializer):
     """
-    Handles both reading and writing tickets.
-    Some fields are read-only because customers should never set them directly
-    (e.g. they can't assign their own agent or set priority to CRITICAL themselves
-    — that decision belongs to staff).
+    Handles reading/writing tickets. Includes computed sla_status field
+    so the frontend can highlight breaching tickets without extra logic.
     """
     customer_username = serializers.CharField(source='customer.username', read_only=True)
     assigned_agent_username = serializers.CharField(
         source='assigned_agent.username', read_only=True, default=None
     )
+    sla_status = serializers.SerializerMethodField()
+    hours_until_sla = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
@@ -72,9 +101,30 @@ class TicketSerializer(serializers.ModelSerializer):
             'customer', 'customer_username',
             'assigned_agent', 'assigned_agent_username',
             'assigned_technician',
+            'sla_deadline', 'sla_status', 'hours_until_sla',
+            'resolved_at', 'ai_reply_count', 'escalated',
             'created_at', 'updated_at', 'closed_at',
         ]
         read_only_fields = [
             'ticket_number', 'status', 'customer',
             'assigned_agent', 'assigned_technician', 'closed_at',
+            'sla_deadline', 'resolved_at', 'ai_reply_count', 'escalated',
         ]
+
+    def get_sla_status(self, obj):
+        """Returns 'OK', 'WARNING' (< 2 hours), 'BREACHED', or 'RESOLVED'."""
+        if obj.status in ['RESOLVED', 'CLOSED']:
+            return 'RESOLVED'
+        if not obj.sla_deadline:
+            return 'OK'
+        now = timezone.now()
+        if now > obj.sla_deadline:
+            return 'BREACHED'
+        hours_left = (obj.sla_deadline - now).total_seconds() / 3600
+        return 'WARNING' if hours_left < 2 else 'OK'
+
+    def get_hours_until_sla(self, obj):
+        if obj.status in ['RESOLVED', 'CLOSED'] or not obj.sla_deadline:
+            return None
+        delta = obj.sla_deadline - timezone.now()
+        return round(delta.total_seconds() / 3600, 1)

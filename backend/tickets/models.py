@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
+from datetime import timedelta
+
 
 class TicketCategory(models.Model):
     """
@@ -37,6 +39,15 @@ class Ticket(models.Model):
         MEDIUM = 'MEDIUM', 'Medium'
         HIGH = 'HIGH', 'High'
         CRITICAL = 'CRITICAL', 'Critical'
+
+    # SLA hours per priority — Critical must be resolved fast, Low can wait
+    SLA_HOURS = {
+        'CRITICAL': 4,
+        'HIGH': 8,
+        'MEDIUM': 24,
+        'LOW': 72,
+    }
+
     ai_reply_count = models.IntegerField(default=0)
     escalated = models.BooleanField(default=False)
     ticket_number = models.CharField(max_length=20, unique=True, blank=True)
@@ -62,6 +73,10 @@ class Ticket(models.Model):
         related_name='tickets_assigned_as_technician', limit_choices_to={'role': 'TECHNICIAN'},
     )
 
+    # SLA & timing fields
+    sla_deadline = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     closed_at = models.DateTimeField(null=True, blank=True)
@@ -70,7 +85,24 @@ class Ticket(models.Model):
         return f"{self.ticket_number} - {self.title}"
 
     class Meta:
-        ordering = ['-created_at']  # newest tickets first by default
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        """Auto-set SLA deadline when the ticket is first created or priority changes."""
+        if not self.pk:
+            # New ticket — will set deadline after created_at is stamped
+            super().save(*args, **kwargs)
+            hours = self.SLA_HOURS.get(self.priority, 24)
+            self.sla_deadline = self.created_at + timedelta(hours=hours)
+            super().save(update_fields=['sla_deadline'])
+        else:
+            super().save(*args, **kwargs)
+
+    def is_sla_breached(self):
+        """Returns True if the deadline has passed and ticket isn't resolved."""
+        if not self.sla_deadline or self.status in ['RESOLVED', 'CLOSED']:
+            return False
+        return timezone.now() > self.sla_deadline
 
     def assign_agent(self, agent):
         """Assigns a support agent and moves ticket to ASSIGNED status."""
@@ -90,6 +122,7 @@ class Ticket(models.Model):
         if self.status not in [self.Status.IN_PROGRESS, self.Status.WAITING_CUSTOMER]:
             raise ValueError("Ticket must be IN_PROGRESS or WAITING_CUSTOMER to resolve.")
         self.status = self.Status.RESOLVED
+        self.resolved_at = timezone.now()
         self.save()
 
     def close(self):
@@ -147,3 +180,70 @@ class Attachment(models.Model):
 
     def __str__(self):
         return f"Attachment for {self.ticket.ticket_number}"
+
+
+class TicketRating(models.Model):
+    """
+    Customer satisfaction rating submitted after a ticket is resolved.
+    One rating per ticket — enforced by OneToOneField.
+    """
+    ticket = models.OneToOneField(Ticket, on_delete=models.CASCADE, related_name='rating')
+    score = models.IntegerField(choices=[(i, str(i)) for i in range(1, 6)])
+    feedback = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.ticket.ticket_number}: {self.score}/5"
+
+
+class TicketActivity(models.Model):
+    """
+    Audit log of every action taken on a ticket.
+    Records status changes, assignments, escalations, comments — the full history.
+    """
+    ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name='activities')
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        related_name='ticket_activities'
+    )
+    action = models.CharField(max_length=100)  # e.g. "status_changed", "assigned", "ai_replied"
+    details = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name_plural = "Ticket activities"
+
+    def __str__(self):
+        return f"{self.ticket.ticket_number}: {self.action} at {self.created_at}"
+
+
+class Outage(models.Model):
+    """
+    Network outages managed by staff. The AI agent checks this table
+    before answering network-related complaints.
+    """
+    class Status(models.TextChoices):
+        ACTIVE = 'ACTIVE', 'Active'
+        RESOLVED = 'RESOLVED', 'Resolved'
+
+    area = models.CharField(max_length=200)
+    description = models.TextField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    started_at = models.DateTimeField(default=timezone.now)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        related_name='outages_created'
+    )
+
+    class Meta:
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f"{self.area} - {self.status}"
+
+    def resolve(self):
+        self.status = self.Status.RESOLVED
+        self.resolved_at = timezone.now()
+        self.save()
