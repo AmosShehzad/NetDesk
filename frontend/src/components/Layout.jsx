@@ -1,42 +1,152 @@
-import { Link, Outlet, useLocation } from 'react-router-dom';
-import { Ticket, User, LogOut } from 'lucide-react';
+import { useState } from 'react';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import {
+  LayoutDashboard,
+  Ticket,
+  KeyRound,
+  LogOut,
+  Menu,
+  Sun,
+  Moon,
+  X,
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
+import NotificationBell from './NotificationBell';
 
 export default function Layout() {
   const { user, logout } = useAuth();
-  const location = useLocation();
-  const initials = (user?.username || user?.phone_number || '?').slice(0, 2).toUpperCase();
+  const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const initials = (user?.username || user?.full_name || '?')
+    .split(' ')
+    .map((s) => s[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">ND</div>
-          <div className="brand-name">NetDesk</div>
+      {/* Sidebar */}
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="sidebar-logo" style={{ margin: 0, padding: 0 }}>NetDesk</div>
+          <button
+            className="icon-btn hamburger"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close menu"
+          >
+            <X size={18} />
+          </button>
         </div>
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <Link to="/portal" className={`nav-link ${location.pathname === '/portal' ? 'active' : ''}`}>
-            <User size={16} /> My Account
-          </Link>
-          <Link to="/tickets" className={`nav-link ${location.pathname.startsWith('/tickets') ? 'active' : ''}`}>
-            <Ticket size={16} /> Tickets
-          </Link>
+
+        <nav className="flex flex-col gap-2" style={{ flex: 1 }}>
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+            onClick={() => setSidebarOpen(false)}
+          >
+            <LayoutDashboard size={18} /> Dashboard
+          </NavLink>
+          <NavLink
+            to="/tickets"
+            className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+            onClick={() => setSidebarOpen(false)}
+          >
+            <Ticket size={18} /> Tickets
+          </NavLink>
+          <NavLink
+            to="/change-password"
+            className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+            onClick={() => setSidebarOpen(false)}
+          >
+            <KeyRound size={18} /> Password
+          </NavLink>
         </nav>
+
+        <button className="sidebar-link" onClick={handleLogout} style={{ textAlign: 'left' }}>
+          <LogOut size={18} /> Log out
+        </button>
       </aside>
-      <div style={{ flex: 1 }}>
+
+      {/* Overlay for mobile */}
+      {sidebarOpen && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.4)',
+            zIndex: 45,
+          }}
+        />
+      )}
+
+      {/* Main column */}
+      <div className="main">
         <header className="topbar">
-          <div className="user-chip">
-            <div className="avatar">{initials}</div>
-            <div>
-              <div style={{ fontWeight: 500 }}>{user?.username || user?.phone_number}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--gray-500)' }}>{user?.role}</div>
+          <div className="flex items-center gap-3">
+            <button
+              className="icon-btn hamburger"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu size={20} />
+            </button>
+            <div className="font-semibold" style={{ fontSize: 15 }}>
+              Welcome back{user?.username ? `, ${user.username}` : ''}
             </div>
           </div>
-          <button onClick={logout} className="btn btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <LogOut size={14} /> Log out
-          </button>
+
+          <div className="topbar-actions">
+            <button
+              className="icon-btn"
+              onClick={toggleTheme}
+              aria-label="Toggle theme"
+              title={theme === 'light' ? 'Switch to dark' : 'Switch to light'}
+            >
+              {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+            </button>
+
+            <NotificationBell />
+
+            <div
+              className="flex items-center gap-2"
+              style={{ paddingLeft: 12, borderLeft: '1px solid var(--border)' }}
+            >
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: '50%',
+                  background: 'var(--brand-600)',
+                  color: '#fff',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 600,
+                  fontSize: 13,
+                }}
+              >
+                {initials}
+              </div>
+              <div style={{ lineHeight: 1.2 }}>
+                <div className="text-sm font-medium">{user?.username || 'User'}</div>
+                <div className="text-xs text-muted">{user?.role || ''}</div>
+              </div>
+            </div>
+          </div>
         </header>
-        <main className="main">
+
+        <main className="page">
           <Outlet />
         </main>
       </div>
