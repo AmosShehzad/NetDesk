@@ -11,15 +11,17 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  if (user) return <Navigate to="/" replace />;
+  if (user) {
+    return <Navigate to={user.role === 'CUSTOMER' ? '/' : '/staff'} replace />;
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      await login(regNumber.trim(), password);
-      navigate('/');
+      const profile = await login(regNumber.trim(), password);
+      navigate(profile?.role === 'CUSTOMER' ? '/' : '/staff', { replace: true });
     } catch (err) {
       setError(
         err?.response?.data?.detail ||
@@ -33,10 +35,7 @@ export default function Login() {
   return (
     <div className="auth-shell">
       <div className="auth-card">
-        <div
-          className="flex items-center gap-3 mb-4"
-          style={{ marginBottom: 24 }}
-        >
+        <div className="flex items-center gap-3 mb-4" style={{ marginBottom: 24 }}>
           <div
             style={{
               width: 44,
@@ -52,22 +51,12 @@ export default function Login() {
             <Wifi size={22} />
           </div>
           <div>
-            <div className="auth-title" style={{ margin: 0, fontSize: 22 }}>
-              NetDesk
-            </div>
+            <div className="auth-title" style={{ margin: 0, fontSize: 22 }}>NetDesk</div>
             <div className="text-muted text-sm">ISP support, online.</div>
           </div>
         </div>
 
-        <div
-          style={{
-            fontSize: 18,
-            fontWeight: 600,
-            marginBottom: 4,
-          }}
-        >
-          Sign in
-        </div>
+        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>Sign in</div>
         <div className="text-muted text-sm" style={{ marginBottom: 24 }}>
           Enter your registration number and password.
         </div>
@@ -109,7 +98,7 @@ export default function Login() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              placeholder="********"
               autoComplete="current-password"
               required
             />
@@ -123,7 +112,7 @@ export default function Login() {
           >
             {loading ? (
               <>
-                <Loader2 size={16} className="spin" /> Signing in…
+                <Loader2 size={16} className="spin" /> Signing in...
               </>
             ) : (
               'Sign in'
@@ -131,10 +120,7 @@ export default function Login() {
           </button>
         </form>
 
-        <div
-          className="text-xs text-muted"
-          style={{ marginTop: 24, textAlign: 'center' }}
-        >
+        <div className="text-xs text-muted" style={{ marginTop: 24, textAlign: 'center' }}>
           Trouble signing in? Contact your ISP support.
         </div>
       </div>

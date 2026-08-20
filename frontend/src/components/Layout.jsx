@@ -9,6 +9,7 @@ import {
   Sun,
   Moon,
   X,
+  Inbox,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -19,6 +20,8 @@ export default function Layout() {
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const isStaff = user && user.role !== 'CUSTOMER';
 
   const handleLogout = () => {
     logout();
@@ -48,14 +51,34 @@ export default function Layout() {
         </div>
 
         <nav className="flex flex-col gap-2" style={{ flex: 1 }}>
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
-            onClick={() => setSidebarOpen(false)}
-          >
-            <LayoutDashboard size={18} /> Dashboard
-          </NavLink>
+          {isStaff ? (
+            <>
+              <NavLink
+                to="/staff"
+                className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <LayoutDashboard size={18} /> Dashboard
+              </NavLink>
+              <NavLink
+                to="/queue"
+                className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Inbox size={18} /> Queue
+              </NavLink>
+            </>
+          ) : (
+            <NavLink
+              to="/"
+              end
+              className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+              onClick={() => setSidebarOpen(false)}
+            >
+              <LayoutDashboard size={18} /> Dashboard
+            </NavLink>
+          )}
+
           <NavLink
             to="/tickets"
             className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}

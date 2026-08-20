@@ -38,6 +38,7 @@ ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'netdesk-ol9b.onrender.com']
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',  # Must be before django.contrib.staticfiles / admin
     'jazzmin',
     'django.contrib.admin',
     'django.contrib.auth',
@@ -49,6 +50,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
     'django_filters',
+    'channels',  # Third-party app integration for WebSockets
 
     'users',
     'tickets',
@@ -100,7 +102,13 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'core.wsgi.application'
 
+ASGI_APPLICATION = 'core.asgi.application'
 
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+    },
+}
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 

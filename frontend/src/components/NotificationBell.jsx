@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Bell, CheckCheck } from 'lucide-react';
 import client from '../api/client';
+import useWebSocket from '../hooks/useWebSocket';
 
 function timeAgo(iso) {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -33,11 +34,24 @@ export default function NotificationBell() {
     }
   };
 
+  // Initial fetch only — WebSocket takes over from here (no more polling)
   useEffect(() => {
     load();
-    const iv = setInterval(load, 30000);
-    return () => clearInterval(iv);
   }, []);
+
+  // Real-time push
+  useWebSocket('notifications/', (msg) => {
+    if (msg.type === 'notification.new' && msg.notification) {
+      setItems((prev) => {
+        // Skip if we already have this one
+        if (msg.notification.id && prev.some((n) => n.id === msg.notification.id)) {
+          return prev;
+        }
+        setCleared(false);
+        return [msg.notification, ...prev].slice(0, 10);
+      });
+    }
+  });
 
   useEffect(() => {
     const onClick = (e) => {
@@ -106,7 +120,7 @@ export default function NotificationBell() {
           </div>
           <div className="dropdown-body">
             {loading && items.length === 0 && !cleared && (
-              <div className="dropdown-item text-muted text-sm">Loading…</div>
+              <div className="dropdown-item text-muted text-sm">Loading...</div>
             )}
             {!loading && items.length === 0 && (
               <div
